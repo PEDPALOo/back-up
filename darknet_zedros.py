@@ -27,6 +27,7 @@ import cv2
 import pyzed.sl as sl
 import rospy
 from std_msgs.msg import String #UInt32
+from std_msgs.msg import Float32 #UInt32
 
 # Get the top-level logger object
 log = logging.getLogger(__name__)
@@ -383,6 +384,7 @@ def main(argv):
     if not cam.is_opened():
         log.info("Opening ZED Camera...")
     status = cam.open(init)
+    #status = cam.open(init_params)
     if status != sl.ERROR_CODE.SUCCESS:
         log.error(repr(status))
         exit()
@@ -437,22 +439,27 @@ def main(argv):
     color_array = generate_color(meta_path)
 
     log.info("Running...")
-
     key = ''
+    rospy.init_node('distance', anonymous=True)
+    #rospy.init_node('angle', anonymous=True)
+    rate = rospy.Rate(10) # 10hz
     while key != 113:  # for 'q' key
         start_time = time.time() # start time of the loop
         err = cam.grab(runtime)
         if err == sl.ERROR_CODE.SUCCESS:
             cam.retrieve_image(mat, sl.VIEW.LEFT)
             image = mat.get_data()
-
+            y_sh = int((image.shape[0]*(8/10)))
+            x_sh = int((image.shape[1]*(3.2/5)))
             cam.retrieve_measure(
                 point_cloud_mat, sl.MEASURE.XYZRGBA)
             depth = point_cloud_mat.get_data()
 
             # Do the detection
             detections = detect(netMain, metaMain, image, thresh)
-
+            coor = []
+            dettt = []
+            cv2.circle(image,(x_sh,y_sh),5,(0,0,255), -1)
             log.info(chr(27) + "[2J"+"**** " + str(len(detections)) + " Results ****")
             for detection in detections:
                 label = detection[0]
@@ -460,23 +467,25 @@ def main(argv):
                 pstring = label+": "+str(np.rint(100 * confidence))+"%"
                 log.info(pstring)
                 bounds = detection[2]
+                x_center = int(bounds[0])
+                y_center = int(bounds[1])
+
                 y_extent = int(bounds[3])
                 x_extent = int(bounds[2])
                 # Coordinates are around the center
                 x_coord = int(bounds[0] - bounds[2]/2)
                 y_coord = int(bounds[1] - bounds[3]/2)
+                coor.append((x_center,y_center))
                 #boundingBox = [[x_coord, y_coord], [x_coord, y_coord + y_extent], [x_coord + x_extent, y_coord + y_extent], [x_coord + x_extent, y_coord]]
                 thickness = 1
                 x, y, z = get_object_depth(depth, bounds)
                 distances = math.sqrt(x * x + y * y + z * z)
                 distance = "{:.2f}".format(distances)
+                if x_center == x_sh :
+                    x_sh = x_sh + 1
                 #ros
-                dis = str(distances*100)
-                #rospy.loginfo(dis)
-                pub = rospy.Publisher('dis', String, queue_size=10)
-                rospy.init_node('distance', anonymous=True)
-                #rate = rospy.Rate(10) # 10hz
-                pub.publish(dis)
+                dis = (distances*100)
+                dettt.append(dis)
                 cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
                               (x_coord + x_extent + thickness, y_coord + (18 + thickness*4)),
                               color_array[detection[3]], -1)
@@ -486,12 +495,30 @@ def main(argv):
                 cv2.rectangle(image, (x_coord - thickness, y_coord - thickness),
                               (x_coord + x_extent + thickness, y_coord + y_extent + thickness),
                               color_array[detection[3]], int(thickness*2))
-
+                cv2.circle(image,(x_center,y_center),5,(0,0,255), -1)
+                #dettt.append(distances)
+                #cv2.line(image,(x_sh,y_sh),(x_center,y_center),(0,0,255),2)
+                #print("slope :",slope)
+            #print(coor)
+            try :
+                min_dist = min(dettt)
+                min_index = dettt.index(min_dist)
+                slope = (coor[min_index][1] - y_sh)/(coor[min_index][0] - x_sh)
+                rad = math.atan(slope)
+                delta = rad*(360/(2*math.pi))
+                print("delta :",delta)
+                cv2.line(image,(x_sh,y_sh),(coor[min_index][0],coor[min_index][1]),(0,0,255),2)
+                pub = rospy.Publisher('slope', String, queue_size=10)
+                pub.publish(str(slope))
+            except:
+                print("not found clone")
             cv2.imshow("ZED", image)
             key = cv2.waitKey(5)
+            #print("FPS: {}".format(1.0 / (time.time() - start_time)))
             log.info("FPS: {}".format(1.0 / (time.time() - start_time)))
         else:
             key = cv2.waitKey(5)
+        rate.sleep()
     cv2.destroyAllWindows()
 
     cam.close()
